@@ -1,51 +1,91 @@
-name: Release
+name: KVitals PL - validate and release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [stable-pl]
+    tags: ['v*-pl.*']
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
-    name: Build & Release
+  build:
+    if: github.repository == 'wojko6/kvitals' && (github.ref == 'refs/heads/stable-pl' || github.ref_type == 'tag')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Extract version from tag
-        id: version
-        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Inject version into metadata.json
-        run: |
-          VERSION="${{ steps.version.outputs.VERSION }}"
-          jq --arg v "$VERSION" '.KPlugin.Version = $v' metadata.json > metadata.tmp
-          mv metadata.tmp metadata.json
-          echo "Updated metadata.json to version $VERSION"
-          cat metadata.json
-
-      - name: Build .plasmoid package
-        run: bash package.sh
-
-      - name: Extract release notes from CHANGELOG
-        id: notes
-        run: |
-          VERSION="${{ steps.version.outputs.VERSION }}"
-          NOTES=$(awk -v ver="$VERSION" '
-            /^## \[/ { if (found) exit; if (index($0, ver)) found=1; next }
-            found { print }
-          ' CHANGELOG.md)
-          echo "NOTES<<EOF" >> "$GITHUB_OUTPUT"
-          echo "$NOTES" >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
         with:
-          files: |
-            *.plasmoid
-            install-remote.sh
-          body: ${{ steps.notes.outputs.NOTES }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y gettext zip unzip
+      - name: Test update manager
+        run: python3 -B tools/update-manager/kvitals-update-selftest-0.2.py
+      - name: Build and validate package
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(python3 -c 'import json; print(json.load(open("metadata.json"))["KPlugin"]["Version"])')
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            TAG="$GITHUB_REF_NAME"
+            git merge-base --is-ancestor HEAD origin/stable-pl
+          else
+            TAG="v${VERSION}-pl.1"
+          fi
+          [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-pl\.[1-9][0-9]*$ ]]
+          [[ "${TAG%-pl.*}" == "v$VERSION" ]]
+          export TAG
+          M=contents/locale/pl/LC_MESSAGES/plasma_applet_org.kde.plasma.kvitals.mo
+          mkdir -p "$(dirname "$M")" dist
+          msgfmt --check --statistics -o "$M" po/pl.po
+          PKG="org.kde.plasma.kvitals-${TAG}.plasmoid"
+          zip -qr "dist/$PKG" metadata.json contents LICENSE README.md
+          unzip -tq "dist/$PKG"
+          (cd dist; sha256sum "$PKG" > SHA256SUMS; sha256sum -c SHA256SUMS)
+          python3 -B - <<'PY'
+          import importlib.util, os, pathlib, tempfile
+          spec = importlib.util.spec_from_file_location('updater', 'tools/update-manager/kvitals-update-0.2.py')
+          u = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(u)
+          tag = os.environ['TAG']
+          package = pathlib.Path('dist') / f'{u.PLUGIN}-{tag}.plasmoid'
+          assert 0 < package.stat().st_size <= u.MAX_ASSET
+          with tempfile.TemporaryDirectory() as t:
+              u.unpack(package.read_bytes(), tag, pathlib.Path(t))
+          print('PACKAGE_COMPATIBILITY=PASS')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kvitals-pl-package
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    if: github.repository == 'wojko6/kvitals' && github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: kvitals-pl-package
+          path: dist
+      - name: Publish verified release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="$GITHUB_REF_NAME"
+          PKG="org.kde.plasma.kvitals-${TAG}.plasmoid"
+          cd dist
+          sha256sum -c SHA256SUMS
+          # Refuse to overwrite existing published or draft releases.
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo 'Release already exists; refusing overwrite' >&2
+            exit 1
+          fi
+          gh release create "$TAG" "$PKG" SHA256SUMS --repo "$GITHUB_REPOSITORY" --verify-tag --draft --title "KVitals $TAG" --notes 'Validated Polish build from stable-pl.'
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
