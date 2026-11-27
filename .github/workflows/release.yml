@@ -36,6 +36,15 @@ jobs:
           [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-pl\.[1-9][0-9]*$ ]]
           [[ "${TAG%-pl.*}" == "v$VERSION" ]]
           export TAG
+          # Distinguish otherwise identical releases for transactional recovery.
+          # Preserve the upstream KPlugin.Version used by KDE.
+          python3 - <<'PY'
+          import json, os, pathlib
+          p = pathlib.Path('metadata.json')
+          data = json.loads(p.read_text())
+          data['X-KVitals-PL-Release'] = os.environ['TAG']
+          p.write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n')
+          PY
           M=contents/locale/pl/LC_MESSAGES/plasma_applet_org.kde.plasma.kvitals.mo
           mkdir -p "$(dirname "$M")" dist
           msgfmt --check --statistics -o "$M" po/pl.po
@@ -53,6 +62,9 @@ jobs:
           assert 0 < package.stat().st_size <= u.MAX_ASSET
           with tempfile.TemporaryDirectory() as t:
               u.unpack(package.read_bytes(), tag, pathlib.Path(t))
+              import json
+              metadata = json.loads((pathlib.Path(t) / 'metadata.json').read_bytes())
+              assert metadata['X-KVitals-PL-Release'] == tag
           print('PACKAGE_COMPATIBILITY=PASS')
           PY
       - uses: actions/upload-artifact@v4
