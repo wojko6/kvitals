@@ -1,0 +1,9 @@
+[Unit]
+Description=KVitals PL - check for updates
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/kvitals-update check
+TimeoutStartSec=180
+Nice=10
+NoNewPrivileges=yes
