@@ -1,3 +1,8 @@
+> **KVitals PL — kanał Graphite Desktop (stable-pl)**  
+> Polskie wydania: [GitHub Releases](https://github.com/wojko6/kvitals/releases).  
+> [Dokumentacja polskiego forka i aktualizatora](tools/update-manager/README.md).  
+> Poniższy oryginalny README opisuje instalację upstream. Nie używaj jego instalatora ani KDE Store do aktualizacji instalacji zarządzanej przez KVitals PL Update Manager.
+
 <div align="center">
 
 # KVitals
